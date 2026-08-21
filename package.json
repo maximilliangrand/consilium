@@ -1,0 +1,20 @@
+{
+  "name": "consilium",
+  "version": "0.1.0",
+  "description": "Deterministic orchestration for LLM agent councils: fan out, refute, converge. Reliability from structure, not a bigger model.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": ["llm", "agents", "orchestration", "multi-agent", "adversarial", "verification", "ai", "fan-out", "pipeline"],
+  "license": "MIT",
+  "author": "maximilliangrand",
+  "devDependencies": { "typescript": "^5.6.0", "vitest": "^2.1.0" }
+}
