@@ -38,6 +38,7 @@ describe("agent", () => {
     );
     expect(await c.agent({ prompt: "x", retries: 5 })).toBe("ok");
     expect(attempts).toBe(3);
+    expect(c.usage().calls).toBe(3);
   });
 
   it("retries on a schema validation failure", async () => {
@@ -183,6 +184,71 @@ describe("budget", () => {
     await c.agent({ prompt: "2" });
     await expect(c.agent({ prompt: "3" })).rejects.toBeInstanceOf(BudgetExceededError);
     expect(c.usage().calls).toBe(2);
+  });
+
+  it.each([1, 3, 8])("caps queued and in-flight calls at concurrency %i", async (concurrency) => {
+    let attempts = 0;
+    const c = council(async () => {
+      attempts++;
+      await Promise.resolve();
+      return "ok";
+    }, { concurrency, budget: { maxCalls: 2 } });
+    const results = await c.fanout(range(10), () => c.agent({ prompt: "x" }));
+    expect(attempts).toBe(2);
+    expect(results.filter((x) => x === "ok")).toHaveLength(2);
+    expect(c.usage().calls).toBe(2);
+  });
+
+  it.each([false, true])("counts failures and caps retries (schema failure: %s)", async (schemaFailure) => {
+    let attempts = 0;
+    const c = council(() => {
+      attempts++;
+      if (!schemaFailure) throw new Error("runner failed");
+      return "invalid";
+    }, { budget: { maxCalls: 2 }, backoffMs: () => 0 });
+    const reject = schema("Reject", () => { throw new Error("invalid output"); });
+    await expect(c.agent({ prompt: "x", retries: 5, ...(schemaFailure && { schema: reject }) }))
+      .rejects.toBeInstanceOf(BudgetExceededError);
+    expect(attempts).toBe(2);
+    expect(c.usage().calls).toBe(2);
+    await expect(c.agent({ prompt: "queued" })).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(attempts).toBe(2);
+  });
+
+  it("counts a terminal failure against subsequent calls", async () => {
+    const c = council(() => { throw new Error("failed"); }, { retries: 0, budget: { maxCalls: 1 } });
+    await expect(c.agent({ prompt: "x" })).rejects.toThrow("failed");
+    expect(c.usage().calls).toBe(1);
+    await expect(c.agent({ prompt: "next" })).rejects.toBeInstanceOf(BudgetExceededError);
+  });
+
+  it("rechecks reported cost before queued calls and retries", async () => {
+    let attempts = 0;
+    const c = council((req) => {
+      attempts++;
+      req.report?.({ cost: 2 });
+      throw new Error("failed after reporting");
+    }, { concurrency: 1, budget: { maxCost: 1 }, backoffMs: () => 0 });
+    expect(await c.fanout(range(3), () => c.agent({ prompt: "x" }))).toEqual([null, null, null]);
+    expect(attempts).toBe(1);
+    expect(c.usage()).toEqual({ calls: 1, cost: 2 });
+  });
+
+  it("allows already in-flight cost to overshoot but blocks queued attempts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let attempts = 0;
+    const c = council(async (req) => {
+      attempts++;
+      if (attempts === 2) release();
+      await gate;
+      req.report?.({ cost: 1 });
+      return "ok";
+    }, { concurrency: 2, budget: { maxCost: 1 } });
+    expect(await c.fanout(range(4), () => c.agent({ prompt: "x" })))
+      .toEqual(["ok", "ok", null, null]);
+    expect(attempts).toBe(2);
+    expect(c.usage()).toEqual({ calls: 2, cost: 2 });
   });
 
   it("charges reported cost and stops loops when exhausted", async () => {

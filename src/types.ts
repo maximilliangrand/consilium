@@ -68,7 +68,10 @@ export interface CouncilOptions {
   readonly concurrency?: number;
   /** Default retries per agent call. Default 2. */
   readonly retries?: number;
-  /** Stop dispatching once this many calls (or this much cost) is spent. */
+  /**
+   * Stop dispatching at maxCalls runner attempts, including failures and retries.
+   * maxCost uses runner-reported cost only; in-flight attempts can overshoot it.
+   */
   readonly budget?: { maxCalls?: number; maxCost?: number };
   /** Decide whether a thrown error is worth retrying. Default: retry anything. */
   readonly shouldRetry?: (error: unknown) => boolean;
