@@ -121,21 +121,23 @@ export class Consilium {
     this.onEvent = options.onEvent ?? (() => {});
   }
 
-  /** Calls made and cost reported so far. */
+  /** Runner attempts started (including failures/retries) and cost reported so far. */
   usage(): { calls: number; cost: number } {
     return { ...this.spent };
   }
 
   /** One agent call: concurrency-capped, retried, schema-validated, budgeted. */
   async agent<T = string>(req: AgentRequest<T>): Promise<T> {
-    this.assertBudget();
     const id = ++this.counter;
     const maxRetries = req.retries ?? this.retries;
     const release = await this.sem.acquire();
     try {
       for (let attempt = 0; ; attempt++) {
+        // Reserve synchronously after acquiring the semaphore, on every attempt.
+        this.assertBudget();
         this.onEvent({ type: "agent:start", id, label: req.label, attempt });
         const started = Date.now();
+        this.spent.calls++;
         try {
           const raw = await this.runner({
             prompt: req.prompt,
@@ -148,8 +150,6 @@ export class Consilium {
             report: (u) => this.chargeUsage(u),
           });
           const value = req.schema ? req.schema.parse(raw) : (raw as T);
-          this.spent.calls++;
-          this.onEvent({ type: "charge", calls: this.spent.calls, cost: this.spent.cost });
           this.onEvent({ type: "agent:end", id, label: req.label, ms: Date.now() - started });
           return value;
         } catch (err) {
@@ -160,6 +160,8 @@ export class Consilium {
           }
           this.onEvent({ type: "agent:error", id, label: req.label, error: err });
           throw err;
+        } finally {
+          this.onEvent({ type: "charge", calls: this.spent.calls, cost: this.spent.cost });
         }
       }
     } finally {

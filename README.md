@@ -1,8 +1,8 @@
 # consilium
 
-**Deterministic orchestration for LLM agent councils. Reliability from structure, not a bigger model.**
+**Typed, model-agnostic orchestration for LLM agent councils.**
 
-A single model call is unreliable. A *process* is reliable: fan out independent hypotheses, adversarially refute each one, converge on the survivors. `consilium` makes that process a few lines of typed, deterministic, model-agnostic code.
+Model calls can be wrong. A structured process can help evaluate them: fan out independent hypotheses, adversarially refute each one, converge on the survivors. `consilium` makes that process a few lines of typed, deterministic, model-agnostic code.
 
 The orchestration is ordinary code you can step through. The model is the only stochastic part, so every pattern here is unit-testable with a mock, no API key required.
 
@@ -17,23 +17,16 @@ import { Consilium } from "consilium";
 
 const council = new Consilium({ runner: myModel, concurrency: 8 });
 
-// Fan reviewers out across dimensions, then send each finding straight into an
-// adversarial refutation. No barrier between the stages: a finding can be under
-// cross-examination while another dimension is still being reviewed.
-const confirmed = await council.pipeline(
-  ["correctness", "security", "performance"],
-  (dim) => council.agent({ label: `review:${dim}`, prompt: review(dim), schema: Findings }),
-  async (r) =>
-    (await council.parallel(
-      r.findings.map((f) => async () => {
-        const verdict = await council.refute({ claim: `real bug: ${f.title}`, context: f, voters: 3 });
-        return verdict.survives ? f : null;
-      }),
-    )).filter(Boolean),
+// Supply a Runner implementation; see "Bring your own model" below.
+const verdicts = await council.fanout(
+  ["Every retry is counted toward the call budget", "Queued calls recheck the budget"],
+  (claim) => council.refute({ claim, voters: 3 }),
 );
+// Failed items are null; surviving claims still need task-specific validation.
+const survivingClaims = verdicts.flatMap((v) => v?.survives ? [v.claim] : []);
 ```
 
-A plausible-but-wrong finding gets three independent skeptics trying to break it, and dies before you ever trust it. That is the difference between "the model said so" and "it survived scrutiny."
+Each finding gets three separately invoked skeptics trying to refute it. Surviving this vote is a workflow result, not proof that a finding is correct; models can share the same mistakes.
 
 ## Primitives
 
@@ -61,9 +54,9 @@ const verdict = await council.refute({
 if (!verdict.survives) drop(finding); // a majority of skeptics broke it
 ```
 
-Each voter is prompted to *refute*, not to agree, and defaults to `refuted` when unsure. Redundant "are you sure?" votes catch far less than three skeptics each hunting for the counterexample.
+Each voter is prompted to *refute*, not to agree, and defaults to `refuted` when unsure. Whether this improves accuracy depends on the model, prompts, and task and requires evaluation on real examples.
 
-### panel: diverse lenses beat identical judges
+### panel: score through several lenses
 
 ```ts
 const scored = await council.panel({
@@ -128,15 +121,27 @@ const v = await council.refute({ claim: "hallucinated race condition", voters: 3
 expect(v.survives).toBe(false); // the skeptics killed it, no API involved
 ```
 
-The test suite drives every pattern this way.
+The test suite drives every pattern this way. These mocked tests verify deterministic control flow; they do not measure model accuracy or prove that a council outperforms a single call.
 
-## Guarantees you get for free
+## Execution behavior
 
 - **Concurrency cap.** Hand a pipeline 500 items; only `concurrency` ever touch the model at once.
 - **Retries with backoff.** Transient errors and schema-validation failures are retried, configurably.
-- **Budget.** Cap by call count or reported cost; `loopUntilDry` stops itself when the budget is spent.
+- **Budget.** `maxCalls` caps runner attempts, including failures and retries. Every attempt checks the budget after acquiring the concurrency slot and reserves its call before invoking the runner. `usage().calls` includes in-flight attempts. `loopUntilDry` stops itself when the budget is spent.
 - **Observability.** Subscribe to `onEvent` for start / end / retry / error / charge, and read `council.usage()`.
 - **Failure isolation.** A thrown agent becomes `null` inside `parallel` / `fanout` / `pipeline`; one bad item never sinks the batch.
+
+Budgets apply to work routed through `council.agent()` (including `refute` voters), not arbitrary callbacks or SDK retries inside a runner. For example:
+
+```ts
+const council = new Consilium({
+  runner,
+  concurrency: 3,
+  budget: { maxCalls: 20, maxCost: 1 },
+});
+```
+
+`maxCost` checks accumulated `report({ cost })` values before each attempt. It cannot reserve unknown future costs or cancel attempts already in flight, so reported cost can overshoot the limit. Token counts alone do not charge cost; the runner example above must also report a cost in the same units as `maxCost` to enforce that limit. Budget rejection throws `BudgetExceededError`; failure-isolating primitives turn it into `null`.
 
 ## Design principles
 

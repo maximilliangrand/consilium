@@ -16,5 +16,5 @@
   "keywords": ["llm", "agents", "orchestration", "multi-agent", "adversarial", "verification", "ai", "fan-out", "pipeline"],
   "license": "MIT",
   "author": "maximilliangrand",
-  "devDependencies": { "typescript": "^5.6.0", "vitest": "^2.1.0" }
+  "devDependencies": { "typescript": "^5.6.0", "vitest": "^3.2.6" }
 }
